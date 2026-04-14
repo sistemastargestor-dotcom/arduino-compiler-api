@@ -23,11 +23,11 @@ class CodePayload(BaseModel):
 
 @app.get("/")
 async def health():
-    return {"status": "online", "service": "StarTec Test Compiler"}
+    return {"status": "online", "service": "StarTec Multi-Board Compiler"}
 
 @app.post("/compile")
 async def compile_code(payload: CodePayload):
-    project_id = f"test_{uuid.uuid4().hex[:6]}"
+    project_id = f"st_{uuid.uuid4().hex[:6]}"
     project_dir = f"/tmp/{project_id}"
     os.makedirs(project_dir, exist_ok=True)
     
@@ -38,7 +38,11 @@ async def compile_code(payload: CodePayload):
         with open(ino_file, "w") as f:
             f.write(payload.code)
         
-        # Tenta compilar apenas para a placa solicitada
+        # Instala bibliotecas se necessário
+        for lib in payload.libraries:
+            subprocess.run(["arduino-cli", "lib", "install", lib], capture_output=True)
+        
+        # Comando de compilação
         compile_cmd = [
             "arduino-cli", "compile",
             "--fqbn", payload.board,
@@ -57,19 +61,20 @@ async def compile_code(payload: CodePayload):
         
         if os.path.exists(build_dir):
             files = os.listdir(build_dir)
-            # Busca .hex primeiro (AVR)
-            hex_file = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
-            # Busca .bin (Outros)
+            
+            # Prioridade 1: .bin (ESP8266)
             bin_file = next((f for f in files if f.endswith(".bin")), None)
+            # Prioridade 2: .hex (Arduino AVR)
+            hex_file = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
 
-            if hex_file:
-                with open(f"{build_dir}/{hex_file}", "r") as f:
-                    output_data = f.read()
-                    file_format = "hex"
-            elif bin_file:
+            if bin_file:
                 with open(f"{build_dir}/{bin_file}", "rb") as f:
                     output_data = base64.b64encode(f.read()).decode('utf-8')
                     file_format = "bin"
+            elif hex_file:
+                with open(f"{build_dir}/{hex_file}", "r") as f:
+                    output_data = f.read()
+                    file_format = "hex"
         
         return {
             "success": True,
