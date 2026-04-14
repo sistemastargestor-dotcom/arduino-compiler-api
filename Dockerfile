@@ -4,7 +4,7 @@ FROM python:3.10-slim
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
 
-# Instala dependências para ferramentas de hardware
+# Instala dependências para ferramentas de hardware e compilação ARM
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -15,12 +15,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Instala o Arduino CLI
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
 
-# Configura o suporte para ESP8266 + AVR (Uno/Mega)
+# Configura suporte para AVR, ESP8266 e STM32
 RUN arduino-cli config init && \
     arduino-cli config add board_manager.additional_urls https://arduino.esp8266.com/stable/package_esp8266com_index.json && \
+    arduino-cli config add board_manager.additional_urls https://github.com/stm32duino/Board_ManagerData/raw/main/package_st_index.json && \
     arduino-cli core update-index && \
+    arduino-cli core install arduino:avr && \
     arduino-cli core install esp8266:esp8266 && \
-    arduino-cli core install arduino:avr
+    arduino-cli core install stm32:stm32
 
 WORKDIR /app
 COPY requirements.txt .
