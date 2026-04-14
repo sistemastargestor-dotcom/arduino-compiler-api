@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Configuração de CORS para permitir que o Lovable acesse a API sem bloqueios
+# Habilita CORS para o Lovable
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,75 +18,83 @@ app.add_middleware(
 
 class CodePayload(BaseModel):
     code: str
-    board: str = "arduino:avr:uno"  # Pode receber 'arduino:avr:uno' ou 'arduino:avr:mega'
+    board: str = "arduino:avr:uno"
     libraries: list[str] = []
 
 @app.get("/")
-async def health_check():
-    return {"status": "online", "message": "Compilador Arduino StarTec pronto!"}
+async def health():
+    return {"status": "online", "service": "StarTec Compiler API"}
 
 @app.post("/compile")
 async def compile_code(payload: CodePayload):
-    # Cria um ID único para este projeto para evitar conflitos entre múltiplos usuários
-    project_id = f"proj_{uuid.uuid4().hex[:8]}"
+    # UUID curto para identificar o projeto nos logs
+    project_id = f"st_{uuid.uuid4().hex[:6]}"
     project_dir = f"/tmp/{project_id}"
     os.makedirs(project_dir, exist_ok=True)
     
     ino_file = f"{project_dir}/{project_id}.ino"
+    build_dir = f"{project_dir}/build"
     
     try:
-        # 1. Escreve o código no arquivo .ino
+        # Escreve o código enviado
         with open(ino_file, "w") as f:
             f.write(payload.code)
         
-        # 2. Instala as bibliotecas necessárias (se houver)
+        # Garante que as bibliotecas solicitadas existam
         for lib in payload.libraries:
-            # Tenta instalar a biblioteca via arduino-cli
-            subprocess.run(
-                ["arduino-cli", "lib", "install", lib],
-                capture_output=True,
-                text=True
-            )
+            subprocess.run(["arduino-cli", "lib", "install", lib], capture_output=True)
         
-        # 3. Executa a compilação
-        # O output-dir define onde os arquivos .hex/.bin serão gerados
-        build_dir = f"{project_dir}/build"
+        # COMANDO DE COMPILAÇÃO:
+        # --clean: Força recompilação total (essencial para mudar de Uno para Mega)
+        # --output-dir: Local fixo para facilitar a busca do binário
         compile_cmd = [
             "arduino-cli", "compile",
             "--fqbn", payload.board,
             "--output-dir", build_dir,
+            "--clean",
             project_dir
         ]
         
         result = subprocess.run(compile_cmd, capture_output=True, text=True)
         
+        # Log de depuração no Easypanel
+        print(f"[{project_id}] Placa: {payload.board}")
+        
         if result.returncode != 0:
-            return {
-                "success": False, 
-                "error": result.stderr or result.stdout
-            }
-        
-        # 4. Busca o arquivo compilado (.hex para AVR ou .bin para outros)
-        # O nome do arquivo varia conforme a placa, então buscamos por extensão
+            print(f"[{project_id}] Erro: {result.stderr}")
+            return {"success": False, "error": result.stderr}
+
+        # Busca pelo arquivo HEX (Intel HEX)
+        # O Mega 2560 produz um HEX que o bootloader STK500v2 entende melhor
         hex_content = ""
-        files = os.listdir(build_dir)
-        target_file = next((f for f in files if f.endswith(".hex") or f.endswith(".bin")), None)
-        
-        if target_file:
-            with open(f"{build_dir}/{target_file}", "r") as f:
-                hex_content = f.read()
+        if os.path.exists(build_dir):
+            files = os.listdir(build_dir)
+            # Filtra para pegar o .hex principal (ignora o .with_bootloader.hex)
+            target = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
+            
+            if not target: # Fallback para qualquer .hex se o anterior falhar
+                target = next((f for f in files if f.endswith(".hex")), None)
+
+            if target:
+                with open(f"{build_dir}/{target}", "r") as f:
+                    hex_content = f.read()
+                    print(f"[{project_id}] HEX gerado com sucesso ({len(hex_content)} bytes)")
+            else:
+                return {"success": False, "error": "Arquivo HEX não encontrado no diretório de build."}
         
         return {
             "success": True,
             "hex": hex_content,
-            "board_used": payload.board
+            "board_used": payload.board,
+            "project_id": project_id
         }
 
     except Exception as e:
+        print(f"[{project_id}] Erro Crítico: {str(e)}")
         return {"success": False, "error": str(e)}
     
     finally:
-        # Limpa os arquivos temporários para não encher o disco da VPS
+        # Limpeza para manter o servidor saudável
         if os.path.exists(project_dir):
             shutil.rmtree(project_dir)
 
