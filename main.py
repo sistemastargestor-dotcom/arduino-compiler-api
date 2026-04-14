@@ -1,14 +1,14 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from pydantic import BaseModel
 import subprocess
 import os
 import uuid
 import shutil
+import base64
 from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Habilita CORS para o Lovable
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -23,11 +23,10 @@ class CodePayload(BaseModel):
 
 @app.get("/")
 async def health():
-    return {"status": "online", "service": "StarTec Compiler API"}
+    return {"status": "online", "service": "StarTec Multi-Board Compiler"}
 
 @app.post("/compile")
 async def compile_code(payload: CodePayload):
-    # UUID curto para identificar o projeto nos logs
     project_id = f"st_{uuid.uuid4().hex[:6]}"
     project_dir = f"/tmp/{project_id}"
     os.makedirs(project_dir, exist_ok=True)
@@ -36,17 +35,13 @@ async def compile_code(payload: CodePayload):
     build_dir = f"{project_dir}/build"
     
     try:
-        # Escreve o código enviado
         with open(ino_file, "w") as f:
             f.write(payload.code)
         
-        # Garante que as bibliotecas solicitadas existam
         for lib in payload.libraries:
             subprocess.run(["arduino-cli", "lib", "install", lib], capture_output=True)
         
-        # COMANDO DE COMPILAÇÃO:
-        # --clean: Força recompilação total (essencial para mudar de Uno para Mega)
-        # --output-dir: Local fixo para facilitar a busca do binário
+        # Compilação limpa
         compile_cmd = [
             "arduino-cli", "compile",
             "--fqbn", payload.board,
@@ -57,44 +52,43 @@ async def compile_code(payload: CodePayload):
         
         result = subprocess.run(compile_cmd, capture_output=True, text=True)
         
-        # Log de depuração no Easypanel
-        print(f"[{project_id}] Placa: {payload.board}")
-        
         if result.returncode != 0:
-            print(f"[{project_id}] Erro: {result.stderr}")
             return {"success": False, "error": result.stderr}
 
-        # Busca pelo arquivo HEX (Intel HEX)
-        # O Mega 2560 produz um HEX que o bootloader STK500v2 entende melhor
-        hex_content = ""
+        output_data = ""
+        file_format = ""
+        
         if os.path.exists(build_dir):
             files = os.listdir(build_dir)
-            # Filtra para pegar o .hex principal (ignora o .with_bootloader.hex)
-            target = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
             
-            if not target: # Fallback para qualquer .hex se o anterior falhar
-                target = next((f for f in files if f.endswith(".hex")), None)
+            # Prioridade 1: Arquivo .bin (Para ESP8266/NodeMCU)
+            bin_file = next((f for f in files if f.endswith(".bin")), None)
+            # Prioridade 2: Arquivo .hex (Para Uno/Mega)
+            hex_file = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
 
-            if target:
-                with open(f"{build_dir}/{target}", "r") as f:
-                    hex_content = f.read()
-                    print(f"[{project_id}] HEX gerado com sucesso ({len(hex_content)} bytes)")
+            if bin_file:
+                with open(f"{build_dir}/{bin_file}", "rb") as f:
+                    # Converte binário para Base64 para envio seguro via JSON
+                    output_data = base64.b64encode(f.read()).decode('utf-8')
+                    file_format = "bin"
+            elif hex_file:
+                with open(f"{build_dir}/{hex_file}", "r") as f:
+                    output_data = f.read()
+                    file_format = "hex"
             else:
-                return {"success": False, "error": "Arquivo HEX não encontrado no diretório de build."}
+                return {"success": False, "error": "Nenhum arquivo binário (.bin) ou hex (.hex) gerado."}
         
         return {
             "success": True,
-            "hex": hex_content,
+            "data": output_data, # Pode ser HEX string ou Base64 binário
+            "format": file_format,
             "board_used": payload.board,
             "project_id": project_id
         }
 
     except Exception as e:
-        print(f"[{project_id}] Erro Crítico: {str(e)}")
         return {"success": False, "error": str(e)}
-    
     finally:
-        # Limpeza para manter o servidor saudável
         if os.path.exists(project_dir):
             shutil.rmtree(project_dir)
 
