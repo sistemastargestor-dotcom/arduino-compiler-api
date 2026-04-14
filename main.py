@@ -23,11 +23,11 @@ class CodePayload(BaseModel):
 
 @app.get("/")
 async def health():
-    return {"status": "online", "service": "StarTec Multi-Architecture Compiler (AVR/ESP/STM32)"}
+    return {"status": "online", "service": "StarTec Test Compiler"}
 
 @app.post("/compile")
 async def compile_code(payload: CodePayload):
-    project_id = f"st_{uuid.uuid4().hex[:6]}"
+    project_id = f"test_{uuid.uuid4().hex[:6]}"
     project_dir = f"/tmp/{project_id}"
     os.makedirs(project_dir, exist_ok=True)
     
@@ -38,11 +38,7 @@ async def compile_code(payload: CodePayload):
         with open(ino_file, "w") as f:
             f.write(payload.code)
         
-        # Instala bibliotecas necessárias
-        for lib in payload.libraries:
-            subprocess.run(["arduino-cli", "lib", "install", lib], capture_output=True)
-        
-        # Comando de compilação unificado
+        # Tenta compilar apenas para a placa solicitada
         compile_cmd = [
             "arduino-cli", "compile",
             "--fqbn", payload.board,
@@ -61,29 +57,25 @@ async def compile_code(payload: CodePayload):
         
         if os.path.exists(build_dir):
             files = os.listdir(build_dir)
-            
-            # Prioridade para STM32 e ESP8266 (Arquivos .bin)
-            bin_file = next((f for f in files if f.endswith(".bin")), None)
-            # Prioridade para AVR (Arquivos .hex)
+            # Busca .hex primeiro (AVR)
             hex_file = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
+            # Busca .bin (Outros)
+            bin_file = next((f for f in files if f.endswith(".bin")), None)
 
-            if bin_file:
-                with open(f"{build_dir}/{bin_file}", "rb") as f:
-                    output_data = base64.b64encode(f.read()).decode('utf-8')
-                    file_format = "bin"
-            elif hex_file:
+            if hex_file:
                 with open(f"{build_dir}/{hex_file}", "r") as f:
                     output_data = f.read()
                     file_format = "hex"
-            else:
-                return {"success": False, "error": "Compilação concluída, mas nenhum binário foi encontrado."}
+            elif bin_file:
+                with open(f"{build_dir}/{bin_file}", "rb") as f:
+                    output_data = base64.b64encode(f.read()).decode('utf-8')
+                    file_format = "bin"
         
         return {
             "success": True,
             "data": output_data,
             "format": file_format,
-            "board_used": payload.board,
-            "project_id": project_id
+            "board_used": payload.board
         }
 
     except Exception as e:
