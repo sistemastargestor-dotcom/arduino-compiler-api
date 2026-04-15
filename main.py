@@ -9,7 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
 
-# Configuração de CORS para permitir que o navegador (Lovable) acesse a API sem bloqueios
+# Configuração de CORS para permitir que o Lovable acesse o backend sem bloqueios
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -25,11 +25,11 @@ class CodePayload(BaseModel):
 
 @app.get("/")
 async def health():
-    return {"status": "online", "service": "StarTec Multi-Compiler v2.1 (AVR/ESP + Libs)"}
+    return {"status": "online", "service": "StarTec Multi-Compiler v2.2 (AVR/ESP + Libs)"}
 
 @app.post("/compile")
 async def compile_code(payload: CodePayload):
-    # Criamos um ID único para cada compilação para evitar conflitos entre usuários
+    # Identificador único para a compilação atual
     project_id = f"st_{uuid.uuid4().hex[:6]}"
     project_dir = f"/tmp/{project_id}"
     os.makedirs(project_dir, exist_ok=True)
@@ -38,19 +38,18 @@ async def compile_code(payload: CodePayload):
     build_dir = f"{project_dir}/build"
     
     try:
-        # Salva o código enviado pelo usuário
+        # 1. Salva o código-fonte
         with open(ino_file, "w") as f:
             f.write(payload.code)
         
-        # Instalação automática das bibliotecas enviadas pelo campo de pesquisa
+        # 2. Instala as bibliotecas solicitadas (via campo de busca do Lovable)
         for lib in payload.libraries:
             lib_name = lib.strip()
             if lib_name:
                 print(f"[{project_id}] Verificando biblioteca: {lib_name}")
-                # O arduino-cli gerencia o cache (só baixa se não existir)
                 subprocess.run(["arduino-cli", "lib", "install", lib_name], capture_output=True)
         
-        # Executa a compilação no arduino-cli
+        # 3. Executa a compilação no arduino-cli
         compile_cmd = [
             "arduino-cli", "compile",
             "--fqbn", payload.board,
@@ -62,7 +61,7 @@ async def compile_code(payload: CodePayload):
         result = subprocess.run(compile_cmd, capture_output=True, text=True)
         
         if result.returncode != 0:
-            # Retorna o erro detalhado da IDE (ex: erro de sintaxe)
+            # Retorna o erro de compilação detalhado (ex: falta de ponto e vírgula no C++)
             return {"success": False, "error": result.stderr or result.stdout}
 
         output_data = ""
@@ -71,34 +70,42 @@ async def compile_code(payload: CodePayload):
         if os.path.exists(build_dir):
             files = os.listdir(build_dir)
             
-            # Ordem de detecção: 
-            # 1. Se gerou .bin -> É uma placa tipo ESP8266
-            bin_file = next((f for f in files if f.endswith(".bin")), None)
-            # 2. Se gerou .hex -> É uma placa tipo Arduino (AVR)
-            hex_file = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
+            # --- Lógica de Identificação por Arquitetura ---
+            
+            # Se a placa for da família AVR (Uno, Mega, Nano)
+            if "avr" in payload.board:
+                hex_file = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
+                if hex_file:
+                    with open(f"{build_dir}/{hex_file}", "r") as f:
+                        output_data = f.read()
+                        file_format = "hex"
+                else:
+                    # Caso não ache o .hex, tenta o .bin mas avisa o formato
+                    bin_file = next((f for f in files if f.endswith(".bin")), None)
+                    if bin_file:
+                        with open(f"{build_dir}/{bin_file}", "rb") as f:
+                            output_data = base64.b64encode(f.read()).decode('utf-8')
+                            file_format = "bin"
 
-            if bin_file:
-                with open(f"{build_dir}/{bin_file}", "rb") as f:
-                    # ESP8266 exige Base64 para envio binário seguro via JSON
-                    output_data = base64.b64encode(f.read()).decode('utf-8')
-                    file_format = "bin"
-            elif hex_file:
-                with open(f"{build_dir}/{hex_file}", "r") as f:
-                    # Arduino Uno/Mega envia o HEX como texto puro
-                    output_data = f.read()
-                    file_format = "hex"
+            # Se a placa for da família ESP8266 (NodeMCU)
+            elif "esp8266" in payload.board:
+                bin_file = next((f for f in files if f.endswith(".bin")), None)
+                if bin_file:
+                    with open(f"{build_dir}/{bin_file}", "rb") as f:
+                        output_data = base64.b64encode(f.read()).decode('utf-8')
+                        file_format = "bin"
         
         return {
             "success": True,
             "data": output_data,
-            "format": file_format, # CAMPO VITAL: Indica ao Lovable qual protocolo usar
+            "format": file_format,
             "board_used": payload.board
         }
 
     except Exception as e:
         return {"success": False, "error": str(e)}
     finally:
-        # Limpa o projeto temporário mas mantém as bibliotecas instaladas no sistema
+        # Limpa o projeto temporário para não encher o disco da VPS
         if os.path.exists(project_dir):
             shutil.rmtree(project_dir)
 
