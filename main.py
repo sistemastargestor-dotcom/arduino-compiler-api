@@ -38,11 +38,10 @@ async def compile_code(payload: CodePayload):
         with open(ino_file, "w") as f:
             f.write(payload.code)
         
-        # Instala bibliotecas se necessário
         for lib in payload.libraries:
             subprocess.run(["arduino-cli", "lib", "install", lib], capture_output=True)
         
-        # Comando de compilação
+        # Compilação limpa
         compile_cmd = [
             "arduino-cli", "compile",
             "--fqbn", payload.board,
@@ -62,25 +61,29 @@ async def compile_code(payload: CodePayload):
         if os.path.exists(build_dir):
             files = os.listdir(build_dir)
             
-            # Prioridade 1: .bin (ESP8266)
+            # Prioridade 1: Arquivo .bin (Para ESP8266/NodeMCU)
             bin_file = next((f for f in files if f.endswith(".bin")), None)
-            # Prioridade 2: .hex (Arduino AVR)
+            # Prioridade 2: Arquivo .hex (Para Uno/Mega)
             hex_file = next((f for f in files if f.endswith(".hex") and not f.endswith(".with_bootloader.hex")), None)
 
             if bin_file:
                 with open(f"{build_dir}/{bin_file}", "rb") as f:
+                    # Converte binário para Base64 para envio seguro via JSON
                     output_data = base64.b64encode(f.read()).decode('utf-8')
                     file_format = "bin"
             elif hex_file:
                 with open(f"{build_dir}/{hex_file}", "r") as f:
                     output_data = f.read()
                     file_format = "hex"
+            else:
+                return {"success": False, "error": "Nenhum arquivo binário (.bin) ou hex (.hex) gerado."}
         
         return {
             "success": True,
-            "data": output_data,
+            "data": output_data, # Pode ser HEX string ou Base64 binário
             "format": file_format,
-            "board_used": payload.board
+            "board_used": payload.board,
+            "project_id": project_id
         }
 
     except Exception as e:
