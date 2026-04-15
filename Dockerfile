@@ -2,10 +2,10 @@ FROM python:3.10-slim
 
 ENV PYTHONDONTWRITEBYTECODE 1
 ENV PYTHONUNBUFFERED 1
-# Define o diretório de dados persistente
+# Diretório de dados persistente para cores e bibliotecas
 ENV ARDUINO_DATA_DIR=/usr/local/share/arduino
 
-# Instala dependências e o Git (essencial para download de certas libs)
+# Instala dependências e Git para download de bibliotecas
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
     ca-certificates \
@@ -14,10 +14,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean \
     && rm -rf /var/lib/apt/lists/*
 
-# Instala o executável do Arduino CLI
+# Instala o Arduino CLI
 RUN curl -fsSL https://raw.githubusercontent.com/arduino/arduino-cli/master/install.sh | sh
 
-# Configura o ambiente e instala as arquiteturas AVR e ESP8266
+# Cria pastas e instala cores (Uno/Mega e ESP8266)
 RUN mkdir -p $ARDUINO_DATA_DIR && \
     arduino-cli config init && \
     arduino-cli config add board_manager.additional_urls https://arduino.esp8266.com/stable/package_esp8266com_index.json && \
